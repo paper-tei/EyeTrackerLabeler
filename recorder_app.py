@@ -19,14 +19,101 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QLineEdit, QCheckBox, QTextEdit,
     QGroupBox, QGridLayout, QMessageBox, QFileDialog,
     QStatusBar, QFrame, QSplitter, QScrollArea, QDialog,
-    QDialogButtonBox, QSpacerItem, QSizePolicy
+    QDialogButtonBox, QSpacerItem, QSizePolicy,
+    QSlider, QSpinBox, QComboBox, QTabWidget
 )
-from PyQt5.QtCore import Qt, QTimer, QSettings, QPropertyAnimation, QEasingCurve
-from PyQt5.QtGui import QPixmap, QImage, QFont, QPalette, QColor
+from PyQt5.QtCore import Qt, QTimer, QSettings, QPropertyAnimation, QEasingCurve, QRect, QPoint
+from PyQt5.QtGui import QPixmap, QImage, QFont, QPalette, QColor, QPainter, QPen, QBrush
 import logging
 
 # 导入WebSocket客户端
 from simple_websocket_client import WebSocketClient
+
+
+class ROISelector(QLabel):
+    """ROI选择器组件"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.start_point = None
+        self.end_point = None
+        self.roi_rect = None
+        self.is_selecting = False
+        self.setMinimumSize(400, 300)
+        
+    def mousePressEvent(self, event):
+        """鼠标按下事件"""
+        if event.button() == Qt.LeftButton:
+            self.start_point = event.pos()
+            self.is_selecting = True
+    
+    def mouseMoveEvent(self, event):
+        """鼠标移动事件"""
+        if self.is_selecting and self.start_point:
+            self.end_point = event.pos()
+            self.update()
+    
+    def mouseReleaseEvent(self, event):
+        """鼠标释放事件"""
+        if event.button() == Qt.LeftButton and self.is_selecting:
+            self.end_point = event.pos()
+            self.is_selecting = False
+            
+            # 计算ROI矩形
+            if self.start_point and self.end_point:
+                x1, y1 = self.start_point.x(), self.start_point.y()
+                x2, y2 = self.end_point.x(), self.end_point.y()
+                
+                x = min(x1, x2)
+                y = min(y1, y2)
+                w = abs(x2 - x1)
+                h = abs(y2 - y1)
+                
+                if w > 10 and h > 10:  # 最小ROI尺寸
+                    self.roi_rect = (x, y, w, h)
+            
+            self.update()
+    
+    def paintEvent(self, event):
+        """绘制事件"""
+        super().paintEvent(event)
+        
+        painter = QPainter(self)
+        
+        # 绘制ROI选择框
+        if self.is_selecting and self.start_point and self.end_point:
+            pen = QPen(Qt.red, 2, Qt.DashLine)
+            painter.setPen(pen)
+            
+            x1, y1 = self.start_point.x(), self.start_point.y()
+            x2, y2 = self.end_point.x(), self.end_point.y()
+            
+            rect = QRect(min(x1, x2), min(y1, y2), abs(x2-x1), abs(y2-y1))
+            painter.drawRect(rect)
+        
+        # 绘制已确认的ROI
+        elif self.roi_rect:
+            pen = QPen(Qt.green, 3, Qt.SolidLine)
+            painter.setPen(pen)
+            
+            x, y, w, h = self.roi_rect
+            rect = QRect(x, y, w, h)
+            painter.drawRect(rect)
+            
+            # 添加ROI信息文字
+            painter.setPen(QPen(Qt.green, 1))
+            painter.drawText(x, y-5, f"ROI: {w}×{h}")
+    
+    def get_roi_rect(self):
+        """获取ROI矩形"""
+        return self.roi_rect
+    
+    def clear_roi(self):
+        """清除ROI选择"""
+        self.roi_rect = None
+        self.start_point = None
+        self.end_point = None
+        self.update()
 
 
 class UserInfoDialog(QDialog):
@@ -1001,10 +1088,17 @@ class PaperTrackerRecorder(QMainWindow):
         """更新预览显示"""
         if self.current_image is not None:
             try:
+                # 处理图像用于预览
+                preview_image = self.current_image.copy()
+                
+                # 应用旋转（仅用于预览）
+                if self.rotation_angle != 0:
+                    preview_image = self.rotate_image(preview_image, self.rotation_angle)
+                
                 # 转换为Qt格式并显示
-                height, width, channel = self.current_image.shape
+                height, width, channel = preview_image.shape
                 bytes_per_line = 3 * width
-                q_image = QImage(self.current_image.data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
+                q_image = QImage(preview_image.data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
                 
                 # 缩放以适应预览区域
                 preview_size = self.preview_label.size()
@@ -1012,6 +1106,20 @@ class PaperTrackerRecorder(QMainWindow):
                     preview_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
                 )
                 self.preview_label.setPixmap(scaled_pixmap)
+                
+                # 计算缩放因子用于ROI坐标转换
+                self.preview_scale_factor = min(
+                    preview_size.width() / width,
+                    preview_size.height() / height
+                )
+                
+                # 更新ROI信息
+                if hasattr(self.preview_label, 'get_roi_rect'):
+                    roi_rect = self.preview_label.get_roi_rect()
+                    if roi_rect:
+                        self.roi_coords = roi_rect
+                        x, y, w, h = roi_rect
+                        self.roi_info_label.setText(f"ROI: {w}×{h} (起点: {x},{y})")
                 
             except Exception as e:
                 self.logger.error(f"更新预览失败: {e}")
@@ -1247,6 +1355,549 @@ def apply_modern_theme(app):
     app.setPalette(palette)
 
 
+class PaperTrackerRecorderEnhanced(PaperTrackerRecorder):
+    """增强版录制器，包含旋转和ROI功能"""
+    
+    def __init__(self):
+        # 初始化旋转和ROI参数
+        self.rotation_angle = 0
+        self.roi_enabled = False
+        self.roi_coords = None  # (x, y, w, h) 相对于原图的坐标
+        self.preview_scale_factor = 1.0
+        
+        super().__init__()
+    
+    def create_control_panel(self) -> QWidget:
+        """创建增强版控制面板"""
+        panel = QWidget()
+        panel.setMinimumWidth(420)
+        panel.setStyleSheet("QWidget { background-color: transparent; }")
+        
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(15, 15, 15, 15)
+        layout.setSpacing(20)
+        
+        # 应用标题
+        title_group = self.create_title_section()
+        layout.addWidget(title_group)
+        
+        # 创建选项卡
+        tab_widget = QTabWidget()
+        tab_widget.setStyleSheet("""
+            QTabWidget::pane {
+                border: 2px solid #dee2e6;
+                border-radius: 8px;
+                background-color: white;
+                margin-top: -1px;
+            }
+            QTabBar::tab {
+                background-color: #f8f9fa;
+                border: 2px solid #dee2e6;
+                border-bottom: none;
+                border-radius: 6px 6px 0 0;
+                padding: 8px 16px;
+                margin-right: 2px;
+                font-weight: 600;
+            }
+            QTabBar::tab:selected {
+                background-color: white;
+                border-bottom: 2px solid white;
+            }
+            QTabBar::tab:hover {
+                background-color: #e9ecef;
+            }
+        """)
+        
+        # 连接设置选项卡
+        connection_tab = QWidget()
+        connection_layout = QVBoxLayout(connection_tab)
+        connection_layout.addWidget(self.create_connection_group())
+        connection_layout.addWidget(self.create_simple_control_group())
+        connection_layout.addWidget(self.create_status_group())
+        connection_layout.addStretch()
+        
+        # 图像处理选项卡
+        processing_tab = QWidget()
+        processing_layout = QVBoxLayout(processing_tab)
+        processing_layout.addWidget(self.create_rotation_group())
+        processing_layout.addWidget(self.create_roi_group())
+        processing_layout.addStretch()
+        
+        # 保存设置选项卡
+        save_tab = QWidget()
+        save_layout = QVBoxLayout(save_tab)
+        save_layout.addWidget(self.create_auto_save_group())
+        save_layout.addStretch()
+        
+        tab_widget.addTab(connection_tab, "🔗 连接")
+        tab_widget.addTab(processing_tab, "🔧 图像处理")
+        tab_widget.addTab(save_tab, "💾 保存")
+        
+        layout.addWidget(tab_widget)
+        layout.addStretch()
+        
+        return panel
+    
+    def create_rotation_group(self) -> QGroupBox:
+        """创建旋转设置组"""
+        group = QGroupBox("🔄 图像旋转")
+        layout = QVBoxLayout()
+        layout.setSpacing(12)
+        
+        # 旋转角度设置
+        angle_layout = QHBoxLayout()
+        angle_label = QLabel("旋转角度:")
+        angle_label.setStyleSheet("QLabel { font-weight: 600; }")
+        angle_layout.addWidget(angle_label)
+        
+        # 角度滑块
+        self.rotation_slider = QSlider(Qt.Horizontal)
+        self.rotation_slider.setRange(-180, 180)
+        self.rotation_slider.setValue(0)
+        self.rotation_slider.setStyleSheet("""
+            QSlider::groove:horizontal {
+                border: 1px solid #dee2e6;
+                height: 8px;
+                background: #f8f9fa;
+                border-radius: 4px;
+            }
+            QSlider::handle:horizontal {
+                background: #007bff;
+                border: 2px solid #0056b3;
+                width: 20px;
+                margin: -7px 0;
+                border-radius: 10px;
+            }
+            QSlider::handle:horizontal:hover {
+                background: #0056b3;
+            }
+        """)
+        angle_layout.addWidget(self.rotation_slider)
+        
+        # 角度数值输入
+        self.angle_spinbox = QSpinBox()
+        self.angle_spinbox.setRange(-180, 180)
+        self.angle_spinbox.setValue(0)
+        self.angle_spinbox.setSuffix("°")
+        self.angle_spinbox.setStyleSheet("""
+            QSpinBox {
+                border: 2px solid #e9ecef;
+                border-radius: 6px;
+                padding: 8px;
+                font-weight: 600;
+                min-width: 60px;
+            }
+            QSpinBox:focus {
+                border-color: #007bff;
+            }
+        """)
+        angle_layout.addWidget(self.angle_spinbox)
+        
+        layout.addLayout(angle_layout)
+        
+        # 快速旋转按钮
+        quick_buttons_layout = QHBoxLayout()
+        quick_buttons = [
+            ("↺ -90°", -90),
+            ("⟲ 0°", 0),
+            ("↻ +90°", 90),
+            ("↕ 180°", 180)
+        ]
+        
+        for text, angle in quick_buttons:
+            btn = QPushButton(text)
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #f8f9fa;
+                    border: 2px solid #dee2e6;
+                    border-radius: 6px;
+                    padding: 6px 12px;
+                    font-weight: 600;
+                    min-width: 60px;
+                }
+                QPushButton:hover {
+                    background-color: #e9ecef;
+                    border-color: #adb5bd;
+                }
+                QPushButton:pressed {
+                    background-color: #dee2e6;
+                }
+            """)
+            btn.clicked.connect(lambda checked, a=angle: self.set_rotation_angle(a))
+            quick_buttons_layout.addWidget(btn)
+        
+        layout.addLayout(quick_buttons_layout)
+        
+        # 连接信号
+        self.rotation_slider.valueChanged.connect(self.on_rotation_changed)
+        self.angle_spinbox.valueChanged.connect(self.on_angle_spinbox_changed)
+        
+        group.setLayout(layout)
+        return group
+    
+    def create_roi_group(self) -> QGroupBox:
+        """创建ROI设置组"""
+        group = QGroupBox("✂️ ROI 区域选择")
+        layout = QVBoxLayout()
+        layout.setSpacing(12)
+        
+        # ROI开关
+        self.roi_checkbox = QCheckBox("启用 ROI 区域截取")
+        self.roi_checkbox.setStyleSheet("""
+            QCheckBox {
+                font-weight: 600;
+                font-size: 11pt;
+                color: #495057;
+            }
+        """)
+        self.roi_checkbox.stateChanged.connect(self.on_roi_enabled_changed)
+        layout.addWidget(self.roi_checkbox)
+        
+        # ROI选择器
+        roi_label = QLabel("在预览区域拖拽选择ROI:")
+        roi_label.setStyleSheet("QLabel { font-weight: 600; color: #6c757d; }")
+        layout.addWidget(roi_label)
+        
+        # ROI操作按钮
+        roi_buttons_layout = QHBoxLayout()
+        
+        self.roi_select_btn = QPushButton("🎯 重新选择")
+        self.roi_select_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #17a2b8;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: #138496;
+            }
+            QPushButton:disabled {
+                background-color: #e9ecef;
+                color: #6c757d;
+            }
+        """)
+        self.roi_select_btn.clicked.connect(self.enable_roi_selection)
+        self.roi_select_btn.setEnabled(False)
+        
+        self.roi_clear_btn = QPushButton("🗑️ 清除")
+        self.roi_clear_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #ffc107;
+                color: #212529;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: #e0a800;
+            }
+            QPushButton:disabled {
+                background-color: #e9ecef;
+                color: #6c757d;
+            }
+        """)
+        self.roi_clear_btn.clicked.connect(self.clear_roi_selection)
+        self.roi_clear_btn.setEnabled(False)
+        
+        roi_buttons_layout.addWidget(self.roi_select_btn)
+        roi_buttons_layout.addWidget(self.roi_clear_btn)
+        layout.addLayout(roi_buttons_layout)
+        
+        # ROI信息显示
+        self.roi_info_label = QLabel("未选择ROI区域")
+        self.roi_info_label.setStyleSheet("""
+            QLabel {
+                font-size: 10pt;
+                color: #6c757d;
+                background-color: #f8f9fa;
+                padding: 8px;
+                border-radius: 6px;
+                border: 1px solid #e9ecef;
+            }
+        """)
+        layout.addWidget(self.roi_info_label)
+        
+        # 输出尺寸信息
+        output_info = QLabel("📐 输出尺寸: 240×240 像素")
+        output_info.setStyleSheet("""
+            QLabel {
+                font-weight: 600;
+                color: #28a745;
+                background-color: #f0fff4;
+                padding: 8px;
+                border-radius: 6px;
+                border: 1px solid #b3e5b3;
+            }
+        """)
+        layout.addWidget(output_info)
+        
+        group.setLayout(layout)
+        return group
+    
+    def create_preview_panel(self) -> QWidget:
+        """创建增强版预览面板"""
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # 预览标题
+        title = QLabel("📺 实时预览")
+        title.setAlignment(Qt.AlignCenter)
+        title.setStyleSheet("""
+            QLabel {
+                font-size: 16pt;
+                font-weight: 600;
+                color: #495057;
+                margin: 15px;
+                padding: 15px;
+                background-color: rgba(255, 255, 255, 0.9);
+                border-radius: 10px;
+                border: 1px solid #dee2e6;
+            }
+        """)
+        layout.addWidget(title)
+        
+        # 使用ROI选择器替代普通预览标签
+        self.preview_label = ROISelector()
+        self.preview_label.setText("📷 等待设备连接...\n\n连接设备后将显示实时图像\n启用ROI后可拖拽选择区域")
+        self.preview_label.setAlignment(Qt.AlignCenter)
+        self.preview_label.setMinimumHeight(500)
+        self.preview_label.setStyleSheet("""
+            QLabel {
+                border: 3px dashed #dee2e6;
+                border-radius: 15px;
+                background-color: rgba(255, 255, 255, 0.9);
+                color: #6c757d;
+                font-size: 14pt;
+                margin: 15px;
+                padding: 30px;
+            }
+        """)
+        layout.addWidget(self.preview_label)
+        
+        return panel
+    
+    def set_rotation_angle(self, angle):
+        """设置旋转角度"""
+        self.rotation_angle = angle
+        self.rotation_slider.setValue(angle)
+        self.angle_spinbox.setValue(angle)
+    
+    def on_rotation_changed(self, value):
+        """旋转滑块变化"""
+        self.rotation_angle = value
+        self.angle_spinbox.setValue(value)
+    
+    def on_angle_spinbox_changed(self, value):
+        """角度输入框变化"""
+        self.rotation_angle = value
+        self.rotation_slider.setValue(value)
+    
+    def on_roi_enabled_changed(self, state):
+        """ROI开关状态变化"""
+        self.roi_enabled = bool(state)
+        self.roi_select_btn.setEnabled(self.roi_enabled)
+        self.roi_clear_btn.setEnabled(self.roi_enabled)
+        
+        if not self.roi_enabled:
+            self.clear_roi_selection()
+    
+    def enable_roi_selection(self):
+        """启用ROI选择模式"""
+        if hasattr(self.preview_label, 'clear_roi'):
+            self.preview_label.clear_roi()
+        self.statusBar().showMessage("🎯 请在预览区域拖拽选择ROI区域")
+    
+    def clear_roi_selection(self):
+        """清除ROI选择"""
+        self.roi_coords = None
+        if hasattr(self.preview_label, 'clear_roi'):
+            self.preview_label.clear_roi()
+        self.roi_info_label.setText("未选择ROI区域")
+        self.statusBar().showMessage("🗑️ ROI区域已清除")
+    
+    def rotate_image(self, image, angle):
+        """旋转图像"""
+        if angle == 0:
+            return image
+        
+        height, width = image.shape[:2]
+        center = (width // 2, height // 2)
+        
+        # 计算旋转矩阵
+        rotation_matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+        
+        # 计算旋转后的图像尺寸
+        cos_val = abs(rotation_matrix[0, 0])
+        sin_val = abs(rotation_matrix[0, 1])
+        new_width = int((height * sin_val) + (width * cos_val))
+        new_height = int((height * cos_val) + (width * sin_val))
+        
+        # 调整旋转矩阵的平移部分
+        rotation_matrix[0, 2] += (new_width / 2) - center[0]
+        rotation_matrix[1, 2] += (new_height / 2) - center[1]
+        
+        # 执行旋转
+        rotated_image = cv2.warpAffine(image, rotation_matrix, (new_width, new_height))
+        return rotated_image
+    
+    def extract_roi(self, image, roi_rect):
+        """提取ROI区域"""
+        if roi_rect is None:
+            return image
+        
+        x, y, w, h = roi_rect
+        height, width = image.shape[:2]
+        
+        # 确保ROI坐标在图像范围内
+        x = max(0, min(x, width - 1))
+        y = max(0, min(y, height - 1))
+        w = max(1, min(w, width - x))
+        h = max(1, min(h, height - y))
+        
+        return image[y:y+h, x:x+w]
+    
+    def resize_to_240x240(self, image):
+        """将图像调整为240×240像素"""
+        return cv2.resize(image, (240, 240), interpolation=cv2.INTER_LANCZOS4)
+    
+    def process_image_for_saving(self, image):
+        """处理图像用于保存（应用旋转、ROI和缩放）"""
+        processed_image = image.copy()
+        
+        # 1. 应用旋转
+        if self.rotation_angle != 0:
+            processed_image = self.rotate_image(processed_image, self.rotation_angle)
+        
+        # 2. 提取ROI区域
+        if self.roi_enabled and self.roi_coords:
+            x, y, w, h = self.roi_coords
+            
+            # 获取预览图像的实际显示信息
+            preview_pixmap = self.preview_label.pixmap()
+            if preview_pixmap:
+                # 预览图像实际显示尺寸
+                displayed_w = preview_pixmap.width()
+                displayed_h = preview_pixmap.height()
+                
+                # QLabel的尺寸
+                label_w = self.preview_label.width()
+                label_h = self.preview_label.height()
+                
+                # 计算图像在QLabel中的偏移（居中显示的偏移）
+                offset_x = (label_w - displayed_w) // 2
+                offset_y = (label_h - displayed_h) // 2
+                
+                # 调整ROI坐标（减去偏移）
+                adjusted_x = x - offset_x
+                adjusted_y = y - offset_y
+                
+                # 确保调整后的坐标在有效范围内
+                if adjusted_x >= 0 and adjusted_y >= 0 and adjusted_x + w <= displayed_w and adjusted_y + h <= displayed_h:
+                    # 获取当前处理图像的尺寸
+                    current_h, current_w = processed_image.shape[:2]
+                    
+                    # 计算缩放比例：当前图像尺寸 / 实际显示尺寸
+                    scale_x = current_w / displayed_w
+                    scale_y = current_h / displayed_h
+                    
+                    # 转换到原图坐标系
+                    original_x = int(adjusted_x * scale_x)
+                    original_y = int(adjusted_y * scale_y)
+                    original_w = int(w * scale_x)
+                    original_h = int(h * scale_y)
+                    
+                    # 边界检查
+                    original_x = max(0, min(original_x, current_w - 1))
+                    original_y = max(0, min(original_y, current_h - 1))
+                    original_w = max(1, min(original_w, current_w - original_x))
+                    original_h = max(1, min(original_h, current_h - original_y))
+                    
+                    processed_image = self.extract_roi(processed_image, (original_x, original_y, original_w, original_h))
+        
+        # 3. 调整到240×240像素
+        processed_image = self.resize_to_240x240(processed_image)
+        
+        return processed_image
+    
+    def update_preview(self):
+        """更新预览显示"""
+        if self.current_image is not None:
+            try:
+                # 处理图像用于预览
+                preview_image = self.current_image.copy()
+                
+                # 应用旋转（仅用于预览）
+                if self.rotation_angle != 0:
+                    preview_image = self.rotate_image(preview_image, self.rotation_angle)
+                
+                # 转换为Qt格式并显示
+                height, width, channel = preview_image.shape
+                bytes_per_line = 3 * width
+                q_image = QImage(preview_image.data, width, height, bytes_per_line, QImage.Format_RGB888).rgbSwapped()
+                
+                # 缩放以适应预览区域
+                preview_size = self.preview_label.size()
+                scaled_pixmap = QPixmap.fromImage(q_image).scaled(
+                    preview_size, Qt.KeepAspectRatio, Qt.SmoothTransformation
+                )
+                self.preview_label.setPixmap(scaled_pixmap)
+                
+                # 计算缩放因子用于ROI坐标转换
+                self.preview_scale_factor = min(
+                    preview_size.width() / width,
+                    preview_size.height() / height
+                )
+                
+                # 更新ROI信息
+                if hasattr(self.preview_label, 'get_roi_rect'):
+                    roi_rect = self.preview_label.get_roi_rect()
+                    if roi_rect:
+                        self.roi_coords = roi_rect
+                        x, y, w, h = roi_rect
+                        self.roi_info_label.setText(f"ROI: {w}×{h} (起点: {x},{y})")
+                
+            except Exception as e:
+                self.logger.error(f"更新预览失败: {e}")
+    
+    def save_current_image(self):
+        """保存当前图像（经过处理）"""
+        if self.current_image is None:
+            return
+        
+        try:
+            # 处理图像（旋转、ROI、缩放）
+            processed_image = self.process_image_for_saving(self.current_image)
+            
+            # 生成文件名
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            
+            # 根据处理参数添加后缀
+            suffix_parts = []
+            if self.rotation_angle != 0:
+                suffix_parts.append(f"rot{self.rotation_angle}")
+            if self.roi_enabled and self.roi_coords:
+                suffix_parts.append("roi")
+            suffix = "_" + "_".join(suffix_parts) if suffix_parts else ""
+            
+            filename = f"img_{timestamp}_{self.recording_count:06d}{suffix}_240x240.jpg"
+            filepath = os.path.join(self.current_session_folder, filename)
+            
+            # 保存为JPG格式，质量95（高质量）
+            cv2.imwrite(filepath, processed_image, [cv2.IMWRITE_JPEG_QUALITY, 95])
+            
+            # 更新计数
+            self.recording_count += 1
+            self.image_count_label.setText(f"{self.recording_count} 张")
+            
+        except Exception as e:
+            self.logger.error(f"保存图像失败: {e}")
+
+
 def main():
     """主函数"""
     # 在创建QApplication之前设置高DPI属性
@@ -1255,8 +1906,8 @@ def main():
     
     app = QApplication(sys.argv)
     app.setApplicationName("PaperTracker图像录制工具")
-    app.setApplicationVersion("3.0.0")
-    app.setApplicationDisplayName("📷 PaperTracker 图像录制工具")
+    app.setApplicationVersion("3.1.0")
+    app.setApplicationDisplayName("📷 PaperTracker 图像录制工具 (增强版)")
     
     # 应用现代主题
     apply_modern_theme(app)
@@ -1266,8 +1917,8 @@ def main():
     font.setHintingPreference(QFont.PreferDefaultHinting)
     app.setFont(font)
     
-    # 创建并显示主窗口
-    window = PaperTrackerRecorder()
+    # 创建并显示主窗口 - 使用增强版
+    window = PaperTrackerRecorderEnhanced()
     window.show()
     
     # 添加启动动画效果

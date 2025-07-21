@@ -14,6 +14,9 @@ def main():
     app.setOrganizationName("PaperTrackerEyeLabeler Team")
     app.setOrganizationDomain("papertracker-eye.com")
     
+    # 设置默认地址
+    os.environ['DEFAULT_ADDRESS'] = "192.168.22.127"
+    
     # 设置全局字体
     font = QFont("Arial", 10)
     app.setFont(font)
