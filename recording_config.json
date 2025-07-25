@@ -1,0 +1,59 @@
+{
+  "recording_stages": [
+    {
+      "name": "正常眨眼",
+      "description": "眼睛正常睁开，四处看，并且正常眨眼",
+      "interval_ms": 300,
+      "target_count": 100,
+      "voice_messages": [
+        "第一阶段：请保持眼睛正常睁开",
+        "请自然地四处观看",
+        "可以正常眨眼",
+        "录制时间约30秒"
+      ]
+    },
+    {
+      "name": "半睁眼",
+      "description": "眼睛半睁开四处看，不眨眼",
+      "interval_ms": 100,
+      "target_count": 40,
+      "voice_messages": [
+        "第二阶段：请保持眼睛半睁开状态",
+        "请四处观看但不要眨眼",
+        "保持眼睛微微睁开",
+        "录制时间约4秒"
+      ]
+    },
+    {
+      "name": "闭眼放松",
+      "description": "放松状态下闭眼",
+      "interval_ms": 100,
+      "target_count": 20,
+      "voice_messages": [
+        "第三阶段：请自然闭上眼睛",
+        "保持放松状态",
+        "不要用力闭眼",
+        "录制时间约2秒"
+      ]
+    },
+    {
+      "name": "快速眨眼",
+      "description": "不断快速眨眼",
+      "interval_ms": 50,
+      "target_count": 30,
+      "voice_messages": [
+        "第四阶段：请快速眨眼",
+        "保持快速眨眼动作",
+        "眨眼频率要快",
+        "录制时间约1.5秒"
+      ]
+    }
+  ],
+  "global_settings": {
+    "countdown_seconds": 5,
+    "stage_pause_seconds": 2,
+    "image_quality": 90,
+    "auto_package": true,
+    "delete_source_after_package": true
+  }
+}

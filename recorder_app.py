@@ -22,12 +22,65 @@ from PyQt5.QtWidgets import (
     QDialogButtonBox, QSpacerItem, QSizePolicy,
     QSlider, QSpinBox, QComboBox, QTabWidget
 )
-from PyQt5.QtCore import Qt, QTimer, QSettings, QPropertyAnimation, QEasingCurve, QRect, QPoint
+from PyQt5.QtCore import Qt, QTimer, QSettings, QPropertyAnimation, QEasingCurve, QRect, QPoint, QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap, QImage, QFont, QPalette, QColor, QPainter, QPen, QBrush
 import logging
+import threading
+import queue
+import winsound  # Windows 音效
 
 # 导入WebSocket客户端
 from simple_websocket_client import WebSocketClient
+
+
+class VoiceGuide(QThread):
+    """语音提示线程"""
+    finished = pyqtSignal()
+    message_changed = pyqtSignal(str)
+    countdown_changed = pyqtSignal(int)
+    
+    def __init__(self, messages, countdown_seconds=5):
+        super().__init__()
+        self.messages = messages  # 语音提示消息列表
+        self.countdown_seconds = countdown_seconds
+        self.should_stop = False
+    
+    def run(self):
+        """运行语音提示"""
+        try:
+            # 播放语音提示
+            for message in self.messages:
+                if self.should_stop:
+                    return
+                    
+                self.message_changed.emit(message)
+                # 使用Windows系统提示音
+                winsound.MessageBeep(winsound.MB_ICONINFORMATION)
+                time.sleep(2)  # 每条消息间隔2秒
+            
+            # 倒计时
+            for i in range(self.countdown_seconds, 0, -1):
+                if self.should_stop:
+                    return
+                    
+                self.countdown_changed.emit(i)
+                self.message_changed.emit(f"准备开始录制... {i}")
+                winsound.MessageBeep(winsound.MB_ICONASTERISK)
+                time.sleep(1)
+            
+            # 开始录制提示
+            if not self.should_stop:
+                self.message_changed.emit("开始录制！")
+                winsound.MessageBeep(winsound.MB_OK)
+                self.finished.emit()
+                
+        except Exception as e:
+            print(f"语音提示线程错误: {e}")
+            self.finished.emit()
+    
+    def stop(self):
+        """停止语音提示"""
+        self.should_stop = True
 
 
 class ROISelector(QLabel):
@@ -341,6 +394,67 @@ class PaperTrackerRecorder(QMainWindow):
         
         # 设置对象
         self.settings = QSettings('PaperTracker', 'ImageRecorder')
+        
+        # 多阶段录制相关变量
+        self.is_multi_stage_recording = False
+        self.current_stage = 0
+        self.stage_folders = []
+        self.stage_recording_count = 0
+        self.stage_timer = QTimer()
+        self.stage_timer.timeout.connect(self.stage_capture_image)
+        self.voice_guide = None
+        
+        # 录制阶段配置
+        self.recording_stages = [
+            {
+                "name": "正常眨眼",
+                "description": "眼睛正常睁开，四处看，并且正常眨眼",
+                "interval_ms": 300,
+                "target_count": 100,
+                "voice_messages": [
+                    "第一阶段：请保持眼睛正常睁开",
+                    "请自然地四处观看",
+                    "可以正常眨眼",
+                    "录制时间约30秒"
+                ]
+            },
+            {
+                "name": "半睁眼",
+                "description": "眼睛半睁开四处看，不眨眼",
+                "interval_ms": 100,
+                "target_count": 40,
+                "voice_messages": [
+                    "第二阶段：请保持眼睛半睁开状态",
+                    "请四处观看但不要眨眼",
+                    "保持眼睛微微睁开",
+                    "录制时间约4秒"
+                ]
+            },
+            {
+                "name": "闭眼放松",
+                "description": "放松状态下闭眼",
+                "interval_ms": 100,
+                "target_count": 20,
+                "voice_messages": [
+                    "第三阶段：请自然闭上眼睛",
+                    "保持放松状态",
+                    "不要用力闭眼",
+                    "录制时间约2秒"
+                ]
+            },
+            {
+                "name": "快速眨眼",
+                "description": "不断快速眨眼",
+                "interval_ms": 50,
+                "target_count": 30,
+                "voice_messages": [
+                    "第四阶段：请快速眨眼",
+                    "保持快速眨眼动作",
+                    "眨眼频率要快",
+                    "录制时间约1.5秒"
+                ]
+            }
+        ]
     
     def check_user_info(self):
         """检查并设置用户信息"""
@@ -604,7 +718,6 @@ class PaperTrackerRecorder(QMainWindow):
         """)
         
         self.device_input = QLineEdit()
-        self.device_input.setPlaceholderText("192.168.1.100:8080")
         self.device_input.setStyleSheet("""
             QLineEdit {
                 border: 2px solid #e9ecef;
@@ -670,8 +783,60 @@ class PaperTrackerRecorder(QMainWindow):
         layout = QVBoxLayout()
         layout.setSpacing(12)
         
+        # 录制模式选择
+        mode_layout = QHBoxLayout()
+        mode_label = QLabel("录制模式:")
+        mode_label.setStyleSheet("QLabel { font-weight: 600; }")
+        mode_layout.addWidget(mode_label)
+        
+        self.single_mode_btn = QPushButton("单次录制")
+        self.multi_stage_mode_btn = QPushButton("🎯 眼球数据采集")
+        
+        for btn in [self.single_mode_btn, self.multi_stage_mode_btn]:
+            btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #f8f9fa;
+                    border: 2px solid #dee2e6;
+                    border-radius: 6px;
+                    padding: 8px 16px;
+                    font-weight: 600;
+                    font-size: 10pt;
+                }
+                QPushButton:hover {
+                    background-color: #e9ecef;
+                }
+                QPushButton:checked {
+                    background-color: #007bff;
+                    color: white;
+                    border-color: #0056b3;
+                }
+            """)
+            btn.setCheckable(True)
+        
+        # 默认选择多阶段录制
+        self.multi_stage_mode_btn.setChecked(True)
+        
+        mode_layout.addWidget(self.single_mode_btn)
+        mode_layout.addWidget(self.multi_stage_mode_btn)
+        layout.addLayout(mode_layout)
+        
+        # 多阶段录制说明
+        self.stage_info_label = QLabel("📋 4个阶段：正常眨眼(100张) → 半睁眼(40张) → 闭眼(20张) → 快速眨眼(30张)")
+        self.stage_info_label.setStyleSheet("""
+            QLabel {
+                font-size: 9pt;
+                color: #6c757d;
+                background-color: #f0f8ff;
+                padding: 8px;
+                border-radius: 6px;
+                border: 1px solid #b3d7ff;
+                margin: 5px 0;
+            }
+        """)
+        layout.addWidget(self.stage_info_label)
+        
         # 录制按钮
-        self.start_btn = ModernButton("▶️ 开始录制", "primary")
+        self.start_btn = ModernButton("▶️ 开始眼球数据录制", "primary")
         self.start_btn.setStyleSheet("""
             QPushButton {
                 background-color: #28a745;
@@ -748,10 +913,29 @@ class PaperTrackerRecorder(QMainWindow):
         """)
         layout.addWidget(self.recording_status, 0, 1)
         
+        # 当前阶段
+        stage_label = QLabel("阶段:")
+        stage_label.setStyleSheet("QLabel { font-weight: 600; }")
+        layout.addWidget(stage_label, 1, 0)
+        
+        self.stage_label = QLabel("未开始")
+        self.stage_label.setStyleSheet("""
+            QLabel {
+                font-weight: 600;
+                font-size: 11pt;
+                color: #007bff;
+                padding: 8px 15px;
+                background-color: #f0f8ff;
+                border-radius: 6px;
+                border: 1px solid #b3d7ff;
+            }
+        """)
+        layout.addWidget(self.stage_label, 1, 1)
+        
         # 录制时长
         duration_label = QLabel("时长:")
         duration_label.setStyleSheet("QLabel { font-weight: 600; }")
-        layout.addWidget(duration_label, 1, 0)
+        layout.addWidget(duration_label, 2, 0)
         
         self.duration_label = QLabel("00:00:00")
         self.duration_label.setStyleSheet("""
@@ -766,12 +950,12 @@ class PaperTrackerRecorder(QMainWindow):
                 border: 1px solid #b3d7ff;
             }
         """)
-        layout.addWidget(self.duration_label, 1, 1)
+        layout.addWidget(self.duration_label, 2, 1)
         
         # 图片数量
         count_label = QLabel("图片:")
         count_label.setStyleSheet("QLabel { font-weight: 600; }")
-        layout.addWidget(count_label, 2, 0)
+        layout.addWidget(count_label, 3, 0)
         
         self.image_count_label = QLabel("0 张")
         self.image_count_label.setStyleSheet("""
@@ -785,7 +969,26 @@ class PaperTrackerRecorder(QMainWindow):
                 border: 1px solid #b3e5b3;
             }
         """)
-        layout.addWidget(self.image_count_label, 2, 1)
+        layout.addWidget(self.image_count_label, 3, 1)
+        
+        # 语音提示显示
+        voice_label = QLabel("提示:")
+        voice_label.setStyleSheet("QLabel { font-weight: 600; }")
+        layout.addWidget(voice_label, 4, 0)
+        
+        self.voice_message_label = QLabel("等待开始...")
+        self.voice_message_label.setStyleSheet("""
+            QLabel {
+                font-weight: 600;
+                font-size: 10pt;
+                color: #ffc107;
+                padding: 8px 15px;
+                background-color: #fff8dc;
+                border-radius: 6px;
+                border: 1px solid #ffd700;
+            }
+        """)
+        layout.addWidget(self.voice_message_label, 4, 1)
         
         group.setLayout(layout)
         return group
@@ -880,6 +1083,10 @@ class PaperTrackerRecorder(QMainWindow):
         self.disconnect_btn.clicked.connect(self.disconnect_device)
         self.start_btn.clicked.connect(self.start_recording)
         self.stop_btn.clicked.connect(self.stop_recording)
+        
+        # 录制模式切换
+        self.single_mode_btn.clicked.connect(self.on_single_mode_selected)
+        self.multi_stage_mode_btn.clicked.connect(self.on_multi_stage_mode_selected)
     
     def setup_default_settings(self):
         """设置默认参数"""
@@ -1077,8 +1284,9 @@ class PaperTrackerRecorder(QMainWindow):
                 self.current_image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             
             if self.current_image is not None:
-                # 自动保存图像（如果正在录制且自动保存开启）
-                if self.is_recording and self.auto_save_checkbox.isChecked():
+                # 多阶段录制模式不在这里保存图像，由stage_timer控制
+                # 单次录制模式在这里自动保存
+                if self.is_recording and self.auto_save_checkbox.isChecked() and not self.is_multi_stage_recording:
                     self.save_current_image()
                     
         except Exception as e:
@@ -1130,6 +1338,14 @@ class PaperTrackerRecorder(QMainWindow):
             QMessageBox.warning(self, "⚠️ 警告", "请先连接设备！")
             return
         
+        # 检查录制模式
+        if self.multi_stage_mode_btn.isChecked():
+            self.start_multi_stage_recording()
+        else:
+            self.start_single_recording()
+    
+    def start_single_recording(self):
+        """开始单次录制"""
         self.is_recording = True
         self.recording_count = 0
         self.session_start_time = datetime.now()
@@ -1153,10 +1369,17 @@ class PaperTrackerRecorder(QMainWindow):
         self.duration_timer.start(1000)  # 每秒更新时长
         
         self.statusBar().showMessage("🎬 正在录制，图片将自动保存...")
-        self.logger.info("开始录制")
+        self.logger.info("开始单次录制")
     
     def stop_recording(self):
         """停止录制"""
+        if self.is_multi_stage_recording:
+            self.stop_multi_stage_recording()
+        else:
+            self.stop_single_recording()
+    
+    def stop_single_recording(self):
+        """停止单次录制"""
         if not self.is_recording:
             return
         
@@ -1185,7 +1408,47 @@ class PaperTrackerRecorder(QMainWindow):
             self.create_recording_package()
         
         self.statusBar().showMessage(f"✅ 录制完成，共保存 {self.recording_count} 张图片")
-        self.logger.info(f"录制停止，共保存 {self.recording_count} 张图片")
+        self.logger.info(f"单次录制停止，共保存 {self.recording_count} 张图片")
+    
+    def stop_multi_stage_recording(self):
+        """停止多阶段录制"""
+        if not self.is_multi_stage_recording:
+            return
+        
+        # 停止当前阶段
+        self.stage_timer.stop()
+        
+        # 停止语音提示
+        if self.voice_guide and self.voice_guide.isRunning():
+            self.voice_guide.stop()
+            self.voice_guide.wait()
+        
+        # 如果有录制数据，创建包
+        if self.recording_count > 0:
+            reply = QMessageBox.question(
+                self, 
+                "🤔 确认停止", 
+                f"当前已录制 {self.recording_count} 张图片，是否保存并停止录制？",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes
+            )
+            if reply == QMessageBox.Yes:
+                self.create_multi_stage_package()
+        
+        # 重置状态
+        self.is_multi_stage_recording = False
+        self.is_recording = False
+        self.duration_timer.stop()
+        
+        # 更新UI状态
+        self.recording_status.setText("⏸️ 待机中")
+        self.stage_label.setText("未开始")
+        self.voice_message_label.setText("等待开始...")
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        
+        self.statusBar().showMessage("⏹️ 多阶段录制已停止")
+        self.logger.info("多阶段录制手动停止")
     
     def save_current_image(self):
         """保存当前图像"""
@@ -1284,6 +1547,273 @@ class PaperTrackerRecorder(QMainWindow):
             self.logger.error(f"创建录制包失败: {e}")
             QMessageBox.critical(self, "❌ 错误", f"创建录制包失败:\n{e}")
     
+    def on_single_mode_selected(self):
+        """选择单次录制模式"""
+        self.single_mode_btn.setChecked(True)
+        self.multi_stage_mode_btn.setChecked(False)
+        self.start_btn.setText("▶️ 开始录制")
+        self.stage_info_label.setText("📋 单次录制模式：连续录制图片")
+        
+    def on_multi_stage_mode_selected(self):
+        """选择多阶段录制模式"""
+        self.single_mode_btn.setChecked(False)
+        self.multi_stage_mode_btn.setChecked(True)
+        self.start_btn.setText("▶️ 开始眼球数据录制")
+        self.stage_info_label.setText("📋 4个阶段：正常眨眼(100张) → 半睁眼(40张) → 闭眼(20张) → 快速眨眼(30张)")
+    
+    def start_multi_stage_recording(self):
+        """开始多阶段录制"""
+        if not self.websocket_client or not self.websocket_client.is_connected():
+            QMessageBox.warning(self, "⚠️ 警告", "请先连接设备！")
+            return
+        
+        self.is_multi_stage_recording = True
+        self.is_recording = True
+        self.current_stage = 0
+        self.recording_count = 0
+        self.session_start_time = datetime.now()
+        self.stage_folders = []
+        
+        # 创建各阶段文件夹
+        for i, stage in enumerate(self.recording_stages):
+            stage_folder = os.path.join(self.current_session_folder, f"stage_{i+1}_{stage['name']}")
+            os.makedirs(stage_folder, exist_ok=True)
+            self.stage_folders.append(stage_folder)
+        
+        # 更新UI状态
+        self.start_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.duration_timer.start(1000)
+        
+        # 开始第一阶段
+        self.start_stage(0)
+        
+        self.statusBar().showMessage("🎬 多阶段眼球数据录制开始...")
+        self.logger.info("开始多阶段录制")
+    
+    def start_stage(self, stage_index):
+        """开始指定阶段的录制"""
+        if stage_index >= len(self.recording_stages):
+            self.complete_multi_stage_recording()
+            return
+        
+        self.current_stage = stage_index
+        self.stage_recording_count = 0
+        stage = self.recording_stages[stage_index]
+        
+        # 更新UI显示
+        self.stage_label.setText(f"第{stage_index + 1}阶段: {stage['name']}")
+        self.recording_status.setText(f"🎯 准备阶段{stage_index + 1}")
+        self.voice_message_label.setText("准备中...")
+        
+        # 停止之前的录制定时器
+        self.stage_timer.stop()
+        
+        # 开始语音提示
+        self.voice_guide = VoiceGuide(stage['voice_messages'], countdown_seconds=5)
+        self.voice_guide.message_changed.connect(self.on_voice_message_changed)
+        self.voice_guide.countdown_changed.connect(self.on_countdown_changed)
+        self.voice_guide.finished.connect(lambda: self.start_stage_recording(stage_index))
+        self.voice_guide.start()
+    
+    def on_voice_message_changed(self, message):
+        """语音消息改变"""
+        self.voice_message_label.setText(message)
+    
+    def on_countdown_changed(self, count):
+        """倒计时改变"""
+        self.voice_message_label.setText(f"倒计时: {count}")
+    
+    def start_stage_recording(self, stage_index):
+        """开始阶段录制"""
+        stage = self.recording_stages[stage_index]
+        
+        # 更新UI状态
+        self.recording_status.setText(f"🔴 录制阶段{stage_index + 1}")
+        self.voice_message_label.setText(f"正在录制: {stage['description']}")
+        
+        # 开始录制定时器
+        self.stage_timer.start(stage['interval_ms'])
+        
+        self.statusBar().showMessage(f"🔴 正在录制第{stage_index + 1}阶段: {stage['name']}")
+    
+    def stage_capture_image(self):
+        """阶段录制捕获图片"""
+        if not self.is_multi_stage_recording or self.current_stage >= len(self.recording_stages):
+            return
+        
+        stage = self.recording_stages[self.current_stage]
+        
+        # 保存当前图片
+        if self.current_image is not None:
+            self.save_stage_image()
+        
+        # 检查是否完成当前阶段
+        if self.stage_recording_count >= stage['target_count']:
+            self.complete_current_stage()
+    
+    def save_stage_image(self):
+        """保存阶段图片"""
+        if self.current_image is None or self.current_stage >= len(self.stage_folders):
+            return
+        
+        try:
+            stage = self.recording_stages[self.current_stage]
+            stage_folder = self.stage_folders[self.current_stage]
+            
+            # 生成文件名
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+            filename = f"stage{self.current_stage + 1}_{stage['name']}_{timestamp}_{self.stage_recording_count:04d}.jpg"
+            filepath = os.path.join(stage_folder, filename)
+            
+            # 保存为JPG格式，质量90
+            cv2.imwrite(filepath, self.current_image, [cv2.IMWRITE_JPEG_QUALITY, 90])
+            
+            # 更新计数
+            self.stage_recording_count += 1
+            self.recording_count += 1
+            
+            # 更新UI显示
+            progress = f"{self.stage_recording_count}/{stage['target_count']}"
+            self.image_count_label.setText(f"{self.recording_count} 张 (当前: {progress})")
+            
+        except Exception as e:
+            self.logger.error(f"保存阶段图像失败: {e}")
+    
+    def complete_current_stage(self):
+        """完成当前阶段"""
+        self.stage_timer.stop()
+        
+        stage = self.recording_stages[self.current_stage]
+        self.logger.info(f"阶段{self.current_stage + 1}完成: {stage['name']}, 图片数量: {self.stage_recording_count}")
+        
+        # 播放完成提示音
+        winsound.MessageBeep(winsound.MB_OK)
+        
+        # 短暂停顿后开始下一阶段
+        QTimer.singleShot(2000, lambda: self.start_stage(self.current_stage + 1))
+        
+        # 更新状态
+        self.voice_message_label.setText(f"阶段{self.current_stage + 1}完成! 准备下一阶段...")
+    
+    def complete_multi_stage_recording(self):
+        """完成多阶段录制"""
+        self.is_multi_stage_recording = False
+        self.is_recording = False
+        self.stage_timer.stop()
+        self.duration_timer.stop()
+        
+        # 停止语音提示
+        if self.voice_guide and self.voice_guide.isRunning():
+            self.voice_guide.stop()
+            self.voice_guide.wait()
+        
+        # 更新UI状态
+        self.recording_status.setText("✅ 录制完成")
+        self.stage_label.setText("全部完成")
+        self.voice_message_label.setText("所有阶段录制完成！")
+        self.start_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
+        
+        # 创建多阶段录制包
+        self.create_multi_stage_package()
+        
+        # 播放完成提示音
+        for _ in range(3):
+            winsound.MessageBeep(winsound.MB_OK)
+            time.sleep(0.2)
+        
+        self.statusBar().showMessage(f"✅ 多阶段录制完成，共录制 {self.recording_count} 张图片")
+        self.logger.info(f"多阶段录制完成，总图片数量: {self.recording_count}")
+    
+    def create_multi_stage_package(self):
+        """创建多阶段录制包"""
+        if not self.current_session_folder or self.recording_count == 0:
+            return
+        
+        try:
+            # 计算录制时长
+            if self.session_start_time:
+                duration = datetime.now() - self.session_start_time
+                duration_minutes = int(duration.total_seconds() / 60)
+                duration_str = f"{duration_minutes}min"
+            else:
+                duration_str = "unknown"
+            
+            # 生成压缩包名称：用户名_眼球数据_总图片数_录制时间.zip
+            username = self.user_info['username']
+            zip_filename = f"{username}_eyedata_{self.recording_count}pics_{duration_str}.zip"
+            zip_path = os.path.join(os.path.dirname(self.current_session_folder), zip_filename)
+            
+            # 创建压缩包
+            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as zipf:
+                # 添加所有阶段文件夹和文件
+                for root, dirs, files in os.walk(self.current_session_folder):
+                    for file in files:
+                        if file.lower().endswith('.jpg'):
+                            file_path = os.path.join(root, file)
+                            # 在压缩包中保持文件夹结构
+                            arcname = os.path.relpath(file_path, self.current_session_folder)
+                            zipf.write(file_path, arcname)
+                
+                # 添加录制信息文件
+                stage_info = []
+                for i, stage in enumerate(self.recording_stages):
+                    stage_info.append({
+                        "stage_number": i + 1,
+                        "stage_name": stage['name'],
+                        "description": stage['description'],
+                        "interval_ms": stage['interval_ms'],
+                        "target_count": stage['target_count'],
+                        "folder_name": f"stage_{i+1}_{stage['name']}"
+                    })
+                
+                session_info = {
+                    "username": username,
+                    "email": self.user_info['email'],
+                    "recording_type": "multi_stage_eye_data",
+                    "recording_time": self.session_start_time.isoformat() if self.session_start_time else None,
+                    "total_image_count": self.recording_count,
+                    "image_format": "jpg",
+                    "duration_minutes": duration_minutes if self.session_start_time else 0,
+                    "stages": stage_info
+                }
+                
+                info_json = json.dumps(session_info, indent=2, ensure_ascii=False)
+                zipf.writestr("recording_info.json", info_json)
+            
+            # 删除原始文件夹
+            shutil.rmtree(self.current_session_folder)
+            
+            # 显示成功消息
+            total_expected = sum(stage['target_count'] for stage in self.recording_stages)
+            QMessageBox.information(
+                self, 
+                "🎉 眼球数据录制完成！", 
+                f"多阶段眼球数据录制已完成并打包！\n\n"
+                f"📦 文件名: {zip_filename}\n"
+                f"📊 图片数量: {self.recording_count}/{total_expected} 张\n"
+                f"📁 阶段数量: {len(self.recording_stages)} 个\n"
+                f"⏱️ 录制时长: {duration_str}\n"
+                f"📂 保存位置: {os.path.dirname(zip_path)}\n\n"
+                f"各阶段图片分布：\n"
+                f"• 正常眨眼: {self.recording_stages[0]['target_count']}张\n"
+                f"• 半睁眼: {self.recording_stages[1]['target_count']}张\n"
+                f"• 闭眼放松: {self.recording_stages[2]['target_count']}张\n"
+                f"• 快速眨眼: {self.recording_stages[3]['target_count']}张"
+            )
+            
+            self.logger.info(f"多阶段录制包创建成功: {zip_path}")
+            
+            # 为下次录制准备新目录
+            self.create_recording_directory()
+            
+        except Exception as e:
+            self.logger.error(f"创建多阶段录制包失败: {e}")
+        except Exception as e:
+            self.logger.error(f"创建多阶段录制包失败: {e}")
+            QMessageBox.critical(self, "❌ 错误", f"创建录制包失败:\n{e}")
+    
     def closeEvent(self, event):
         """窗口关闭事件"""
         # 停止所有定时器
@@ -1293,16 +1823,33 @@ class PaperTrackerRecorder(QMainWindow):
             self.duration_timer.stop()
         if hasattr(self, 'reconnect_timer'):
             self.reconnect_timer.stop()
+        if hasattr(self, 'stage_timer'):
+            self.stage_timer.stop()
+        
+        # 停止语音提示线程
+        if hasattr(self, 'voice_guide') and self.voice_guide and self.voice_guide.isRunning():
+            self.voice_guide.stop()
+            self.voice_guide.wait()
         
         # 如果正在录制，先询问用户
         if self.is_recording:
-            reply = QMessageBox.question(
-                self, 
-                "🤔 确认退出", 
-                "正在录制中，确定要退出吗？\n录制数据将会保存。",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No
-            )
+            if self.is_multi_stage_recording:
+                reply = QMessageBox.question(
+                    self, 
+                    "🤔 确认退出", 
+                    f"正在进行多阶段录制（当前第{self.current_stage + 1}阶段），确定要退出吗？\n录制数据将会保存。",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+            else:
+                reply = QMessageBox.question(
+                    self, 
+                    "🤔 确认退出", 
+                    "正在录制中，确定要退出吗？\n录制数据将会保存。",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.No
+                )
+            
             if reply == QMessageBox.No:
                 event.ignore()
                 return

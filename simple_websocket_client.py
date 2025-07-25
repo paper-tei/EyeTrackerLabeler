@@ -40,10 +40,9 @@ class WebSocketClient(QObject):
         # 设置日志
         self.logger = logging.getLogger(__name__)
         
-        # 状态检查定时器
-        self.status_timer = QTimer()
-        self.status_timer.timeout.connect(self.check_connection_status)
-        self.status_timer.setInterval(1000)  # 每秒检查一次
+        # 状态检查定时器 - 完全禁用以避免干扰
+        self.enable_status_check = False  # 完全禁用状态检查
+        self.status_timer = None  # 不创建定时器
         
         # 图像接收计数
         self.image_count = 0
@@ -52,6 +51,10 @@ class WebSocketClient(QObject):
     def set_url(self, url: str):
         """设置WebSocket URL"""
         self.url = url
+        
+    def enable_status_monitoring(self, enabled: bool = True):
+        """启用或禁用状态监控 - 完全禁用此功能"""
+        self.logger.info("状态监控功能已完全禁用以防止连接问题")
         
     def get_url(self) -> str:
         """获取当前URL"""
@@ -102,22 +105,20 @@ class WebSocketClient(QObject):
         self.connection_thread.daemon = True
         self.connection_thread.start()
         
-        # 启动状态检查定时器
-        self.status_timer.start()
+        # 完全不启动状态检查定时器
         
     def disconnect_from_device(self):
         """断开设备连接"""
         self.is_running = False
         self.is_connected_flag = False
         
-        # 停止状态检查定时器
-        self.status_timer.stop()
+        # 不需要停止状态检查定时器（因为已经禁用）
         
-        # 关闭WebSocket连接
+        # 温和地关闭WebSocket连接
         if self.websocket:
             try:
-                # 在异步环境中关闭连接
-                asyncio.create_task(self._close_websocket())
+                # 设置关闭标志，让接收循环自然结束
+                self.websocket = None
             except Exception as e:
                 self.logger.error(f"关闭WebSocket连接时出错: {e}")
         
@@ -166,14 +167,21 @@ class WebSocketClient(QObject):
         try:
             self.logger.info(f"正在连接到: {url}")
             
-            # 连接到WebSocket服务器
+            # 连接到WebSocket服务器 - 禁用心跳检测和超时
             self.websocket = await asyncio.wait_for(
-                websockets.connect(url), 
-                timeout=5.0
+                websockets.connect(
+                    url,
+                    ping_interval=None,  # 禁用ping心跳
+                    ping_timeout=None,   # 禁用ping超时
+                    close_timeout=None,  # 禁用关闭超时
+                    max_size=None,       # 禁用消息大小限制
+                    max_queue=None       # 禁用队列大小限制
+                ), 
+                timeout=10.0  # 只保留连接建立超时
             )
             
             self.is_connected_flag = True
-            self.logger.info(f"成功连接到设备: {url}")
+            self.logger.info(f"成功连接到设备: {url} (心跳检测已禁用)")
             self.connected.emit()
             
             # 开始接收数据
@@ -195,23 +203,30 @@ class WebSocketClient(QObject):
                 self.disconnected.emit()
                 
     async def _receive_messages(self):
-        """接收WebSocket消息"""
+        """接收WebSocket消息 - 优化以防止超时断开"""
         try:
-            async for message in self.websocket:
-                if not self.is_running:
+            # 设置更宽松的接收循环，完全移除对closed属性的检查
+            while self.is_running and self.websocket:
+                try:
+                    # 不设置超时，让recv()永久等待直到有消息或连接断开
+                    message = await self.websocket.recv()
+                    
+                    if isinstance(message, bytes):
+                        # 处理图像数据
+                        self._process_image_data(message)
+                    else:
+                        # 处理文本消息
+                        self._process_text_message(message)
+                        
+                except websockets.exceptions.ConnectionClosed:
+                    self.logger.info("WebSocket连接已关闭")
+                    break
+                except Exception as e:
+                    self.logger.error(f"接收消息时发生错误: {e}")
                     break
                     
-                if isinstance(message, bytes):
-                    # 处理图像数据
-                    self._process_image_data(message)
-                else:
-                    # 处理文本消息
-                    self._process_text_message(message)
-                    
-        except websockets.exceptions.ConnectionClosed:
-            self.logger.info("WebSocket连接已关闭")
         except Exception as e:
-            self.logger.error(f"接收消息时出错: {e}")
+            self.logger.error(f"接收消息主循环出错: {e}")
             self.error_occurred.emit(f"接收数据时出错: {e}")
             
     def _process_image_data(self, data: bytes):
@@ -276,33 +291,18 @@ class WebSocketClient(QObject):
             self.logger.error(f"处理文本消息时出错: {e}")
             
     def check_connection_status(self):
-        """检查连接状态"""
+        """检查连接状态 - 完全禁用连接状态检查，避免访问可能不存在的属性"""
         if not self.is_running:
             return
             
         current_time = time.time()
         
-        # 检查是否长时间没有收到图像
-        if self.last_image_time > 0 and (current_time - self.last_image_time) > 5.0:
-            self.logger.warning("长时间未收到图像数据，可能连接异常")
+        # 只检查图像接收超时，不检查WebSocket连接状态
+        if self.last_image_time > 0 and (current_time - self.last_image_time) > 60.0:
+            self.logger.warning("长时间未收到图像数据")
             self.status_updated.emit("警告: 长时间未收到图像数据")
             
-        # 检查WebSocket连接状态 - 使用更安全的方式检查
-        try:
-            if self.websocket:
-                # 尝试检查连接状态，不同版本的websockets库可能有不同的属性
-                is_closed = False
-                if hasattr(self.websocket, 'closed'):
-                    is_closed = self.websocket.closed
-                elif hasattr(self.websocket, 'close_code'):
-                    is_closed = self.websocket.close_code is not None
-                
-                if is_closed:
-                    self.logger.warning("WebSocket连接已断开")
-                    self.is_connected_flag = False
-                    self.disconnected.emit()
-        except Exception as e:
-            self.logger.debug(f"检查连接状态时出错: {e}")
+        # 完全移除WebSocket连接状态检查，避免属性访问错误
             
     def get_connection_info(self) -> dict:
         """获取连接信息"""
