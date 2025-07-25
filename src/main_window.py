@@ -196,6 +196,7 @@ class MainWindow(QMainWindow):
         """初始化UI"""
         self.setWindowTitle("PaperTrackerEyeLabeler - 眼部追踪标注工具")
         self.setGeometry(100, 100, 1800, 1000)
+        self.setMinimumSize(1400, 800)  # 设置最小窗口尺寸
         
         # 创建中央部件
         central_widget = QWidget()
@@ -203,11 +204,12 @@ class MainWindow(QMainWindow):
         
         # 创建主布局
         main_layout = QHBoxLayout(central_widget)
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(8)
+        main_layout.setContentsMargins(8, 8, 8, 8)
         
         # 创建分割器
         splitter = QSplitter(Qt.Horizontal)
+        splitter.setChildrenCollapsible(False)  # 防止面板被完全折叠
         main_layout.addWidget(splitter)
         
         # 左侧控制面板
@@ -216,7 +218,8 @@ class MainWindow(QMainWindow):
         
         # 中央图像显示区域
         self.image_label = DrawOnPic()
-        self.image_label.setMinimumSize(1000, 700)
+        self.image_label.setMinimumSize(600, 400)  # 减小最小尺寸以提高灵活性
+        self.image_label.setSizePolicy(self.image_label.sizePolicy().Expanding, self.image_label.sizePolicy().Expanding)
         splitter.addWidget(self.image_label)
         self.image_label.auto_save = getattr(self, 'auto_save_enabled', True)
     
@@ -224,8 +227,11 @@ class MainWindow(QMainWindow):
         right_panel = self.create_right_panel()
         splitter.addWidget(right_panel)
         
-        # 设置分割器比例
-        splitter.setSizes([300, 1200, 300])
+        # 设置分割器比例和约束
+        splitter.setStretchFactor(0, 0)  # 左侧面板不拉伸
+        splitter.setStretchFactor(1, 1)  # 中央区域主要拉伸
+        splitter.setStretchFactor(2, 0)  # 右侧面板不拉伸
+        splitter.setSizes([280, 1000, 280])  # 初始尺寸
         
         # 状态栏
         self.status_label = QLabel("就绪")
@@ -238,13 +244,17 @@ class MainWindow(QMainWindow):
     def create_left_panel(self) -> QWidget:
         """创建左侧面板"""
         panel = QWidget()
-        panel.setMaximumWidth(300)
-        panel.setMinimumWidth(280)
+        panel.setMaximumWidth(320)
+        panel.setMinimumWidth(260)
+        panel.setSizePolicy(panel.sizePolicy().Fixed, panel.sizePolicy().Expanding)
         layout = QVBoxLayout(panel)
+        layout.setSpacing(8)
+        layout.setContentsMargins(8, 8, 8, 8)
         
         # 重新配置组
         reconfig_group = QGroupBox("重新配置")
         reconfig_layout = QVBoxLayout(reconfig_group)
+        reconfig_layout.setSpacing(6)
         
         self.reconfig_button = QPushButton("⚙️ 重新选择文件夹")
         self.reconfig_button.setMinimumHeight(35)
@@ -261,18 +271,22 @@ class MainWindow(QMainWindow):
         # 图片导航组
         nav_group = QGroupBox("图片导航")
         nav_layout = QVBoxLayout(nav_group)
+        nav_layout.setSpacing(6)
         
         slider_layout = QHBoxLayout()
+        slider_layout.setSpacing(4)
         self.file_slider = QSlider(Qt.Horizontal)
         self.file_label = QLabel("[0/0]")
-        self.file_label.setMinimumWidth(60)
+        self.file_label.setMinimumWidth(50)
+        self.file_label.setMaximumWidth(60)
         self.file_label.setStyleSheet("font-weight: bold; color: #4a90e2;")
         slider_layout.addWidget(self.file_slider)
         slider_layout.addWidget(self.file_label)
         nav_layout.addLayout(slider_layout)
         
         self.file_list = QListWidget()
-        self.file_list.setMaximumHeight(200)
+        self.file_list.setMaximumHeight(180)
+        self.file_list.setMinimumHeight(120)
         nav_layout.addWidget(self.file_list)
         
         layout.addWidget(nav_group)
@@ -280,21 +294,26 @@ class MainWindow(QMainWindow):
         # 标注操作组
         annotation_group = QGroupBox("标注操作")
         annotation_layout = QVBoxLayout(annotation_group)
+        annotation_layout.setSpacing(6)
         
         self.add_label_button = QPushButton("✏️ 添加标签 (Space)")
-        self.add_label_button.setMinimumHeight(35)
+        self.add_label_button.setMinimumHeight(32)
+        self.add_label_button.setMaximumHeight(40)
         annotation_layout.addWidget(self.add_label_button)
         
         self.smart_button = QPushButton("🔍 智能检测 (S)")
-        self.smart_button.setMinimumHeight(35)
+        self.smart_button.setMinimumHeight(32)
+        self.smart_button.setMaximumHeight(40)
         annotation_layout.addWidget(self.smart_button)
         
         self.smart_all_button = QPushButton("🚀 全部智能检测")
-        self.smart_all_button.setMinimumHeight(35)
+        self.smart_all_button.setMinimumHeight(32)
+        self.smart_all_button.setMaximumHeight(40)
         annotation_layout.addWidget(self.smart_all_button)
         
         self.save_button = QPushButton("💾 保存")
-        self.save_button.setMinimumHeight(35)
+        self.save_button.setMinimumHeight(32)
+        self.save_button.setMaximumHeight(40)
         annotation_layout.addWidget(self.save_button)
         
         self.auto_save_checkbox = QCheckBox("✅ 自动保存")
@@ -306,17 +325,21 @@ class MainWindow(QMainWindow):
         # 状态信息组
         status_group = QGroupBox("状态信息")
         status_layout = QVBoxLayout(status_group)
+        status_layout.setSpacing(4)
         
         self.image_folder_info_label = QLabel("图片文件夹: 未选择")
         self.image_folder_info_label.setWordWrap(True)
+        self.image_folder_info_label.setMinimumHeight(20)
         status_layout.addWidget(self.image_folder_info_label)
         
         self.dataset_folder_info_label = QLabel("数据集文件夹: 未选择")
         self.dataset_folder_info_label.setWordWrap(True)
+        self.dataset_folder_info_label.setMinimumHeight(20)
         status_layout.addWidget(self.dataset_folder_info_label)
         
         self.model_info_label = QLabel("模型: 未加载")
         self.model_info_label.setWordWrap(True)
+        self.model_info_label.setMinimumHeight(20)
         status_layout.addWidget(self.model_info_label)
         
         layout.addWidget(status_group)
@@ -324,9 +347,11 @@ class MainWindow(QMainWindow):
         # 操作说明
         help_group = QGroupBox("操作说明")
         help_layout = QVBoxLayout(help_group)
+        help_layout.setSpacing(4)
         
         help_text = QTextEdit()
-        help_text.setMaximumHeight(150)
+        help_text.setMaximumHeight(130)
+        help_text.setMinimumHeight(100)
         help_text.setReadOnly(True)
         help_text.setPlainText(
             "键盘快捷键：\n"
@@ -350,13 +375,17 @@ class MainWindow(QMainWindow):
     def create_right_panel(self) -> QWidget:
         """创建右侧面板"""
         panel = QWidget()
-        panel.setMaximumWidth(300)
-        panel.setMinimumWidth(280)
+        panel.setMaximumWidth(320)
+        panel.setMinimumWidth(260)
+        panel.setSizePolicy(panel.sizePolicy().Fixed, panel.sizePolicy().Expanding)
         layout = QVBoxLayout(panel)
+        layout.setSpacing(8)
+        layout.setContentsMargins(8, 8, 8, 8)
         
         # 标注进度组
         progress_group = QGroupBox("标注进度")
         progress_layout = QVBoxLayout(progress_group)
+        progress_layout.setSpacing(6)
         
         self.progress_label = QLabel("当前进度：0/7 点")
         self.progress_label.setStyleSheet("font-weight: bold; color: #4a90e2;")
@@ -367,9 +396,11 @@ class MainWindow(QMainWindow):
         # 当前标签列表
         labels_group = QGroupBox("当前标签")
         labels_layout = QVBoxLayout(labels_group)
+        labels_layout.setSpacing(4)
         
         self.label_now_list = QListWidget()
-        self.label_now_list.setMaximumHeight(300)
+        self.label_now_list.setMaximumHeight(250)
+        self.label_now_list.setMinimumHeight(150)
         labels_layout.addWidget(self.label_now_list)
         
         layout.addWidget(labels_group)
@@ -377,9 +408,11 @@ class MainWindow(QMainWindow):
         # 标注说明
         info_group = QGroupBox("标注说明")
         info_layout = QVBoxLayout(info_group)
+        info_layout.setSpacing(4)
         
         info_text = QTextEdit()
-        info_text.setMaximumHeight(200)
+        info_text.setMaximumHeight(180)
+        info_text.setMinimumHeight(140)
         info_text.setReadOnly(True)
         info_text.setPlainText(
             "七边形标注说明：\n\n"

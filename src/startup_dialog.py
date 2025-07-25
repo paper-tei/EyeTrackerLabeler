@@ -18,7 +18,7 @@ class StartupDialog(QDialog):
     def init_ui(self):
         """初始化UI"""
         self.setWindowTitle("PaperTrackerEyeLabeler - 启动配置")
-        self.setFixedSize(700, 700)
+        self.setFixedSize(750, 700)
         self.setModal(True)
         
         # 设置样式
@@ -95,8 +95,8 @@ class StartupDialog(QDialog):
         """)
         
         layout = QVBoxLayout(self)
-        layout.setSpacing(15)
-        layout.setContentsMargins(25, 25, 25, 25)
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 20, 20, 20)
         
         # 标题
         title_label = QLabel("PaperTrackerEyeLabeler")
@@ -116,28 +116,35 @@ class StartupDialog(QDialog):
         # 必选配置组
         required_group = QGroupBox("必选配置")
         required_layout = QVBoxLayout(required_group)
-        required_layout.setSpacing(10)
+        required_layout.setSpacing(8)
+        required_layout.setContentsMargins(15, 15, 15, 15)
         
         # 图片文件夹选择
         folder_layout = QHBoxLayout()
+        folder_layout.setSpacing(8)
         self.folder_button = QPushButton("📁 选择图片文件夹")
         self.folder_button.setMinimumHeight(35)
+        self.folder_button.setMinimumWidth(140)
         self.folder_button.clicked.connect(self.select_image_folder)
         self.folder_label = QLabel("未选择图片文件夹")
         self.folder_label.setStyleSheet("color: #ff6b6b; font-style: italic;")
         self.folder_label.setWordWrap(True)
+        self.folder_label.setMinimumHeight(35)
         folder_layout.addWidget(self.folder_button)
         folder_layout.addWidget(self.folder_label, 1)
         required_layout.addLayout(folder_layout)
         
         # 数据集保存文件夹选择
         dataset_layout = QHBoxLayout()
+        dataset_layout.setSpacing(8)
         self.dataset_button = QPushButton("💾 选择数据集保存文件夹")
         self.dataset_button.setMinimumHeight(35)
+        self.dataset_button.setMinimumWidth(140)
         self.dataset_button.clicked.connect(self.select_dataset_folder)
         self.dataset_label = QLabel("未选择数据集保存文件夹")
         self.dataset_label.setStyleSheet("color: #ff6b6b; font-style: italic;")
         self.dataset_label.setWordWrap(True)
+        self.dataset_label.setMinimumHeight(35)
         dataset_layout.addWidget(self.dataset_button)
         dataset_layout.addWidget(self.dataset_label, 1)
         required_layout.addLayout(dataset_layout)
@@ -147,16 +154,20 @@ class StartupDialog(QDialog):
         # 可选配置组
         optional_group = QGroupBox("可选配置")
         optional_layout = QVBoxLayout(optional_group)
-        optional_layout.setSpacing(10)
+        optional_layout.setSpacing(8)
+        optional_layout.setContentsMargins(15, 15, 15, 15)
         
         # 模型文件选择
         model_layout = QHBoxLayout()
+        model_layout.setSpacing(8)
         self.model_button = QPushButton("🤖 选择模型文件")
         self.model_button.setMinimumHeight(35)
+        self.model_button.setMinimumWidth(140)
         self.model_button.clicked.connect(self.select_model_file)
         self.model_label = QLabel("未选择模型（将禁用智能标注）")
         self.model_label.setStyleSheet("color: #feca57; font-style: italic;")
         self.model_label.setWordWrap(True)
+        self.model_label.setMinimumHeight(35)
         model_layout.addWidget(self.model_button)
         model_layout.addWidget(self.model_label, 1)
         optional_layout.addLayout(model_layout)
@@ -166,10 +177,11 @@ class StartupDialog(QDialog):
         # 使用说明
         help_group = QGroupBox("使用说明")
         help_layout = QVBoxLayout(help_group)
+        help_layout.setContentsMargins(15, 15, 15, 15)
         
         help_text = QTextEdit()
-        help_text.setMaximumHeight(120)
-        help_text.setMinimumHeight(120)
+        help_text.setMaximumHeight(110)
+        help_text.setMinimumHeight(110)
         help_text.setReadOnly(True)
         help_text.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         help_text.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
@@ -204,8 +216,10 @@ class StartupDialog(QDialog):
         
         # 按钮组
         button_layout = QHBoxLayout()
+        button_layout.setSpacing(10)
         self.ok_button = QPushButton("✅ 开始标注")
         self.ok_button.setMinimumHeight(40)
+        self.ok_button.setMinimumWidth(120)
         self.ok_button.clicked.connect(self.accept)
         self.ok_button.setEnabled(False)
         self.ok_button.setStyleSheet("""
@@ -226,11 +240,11 @@ class StartupDialog(QDialog):
         
         self.cancel_button = QPushButton("❌ 取消")
         self.cancel_button.setMinimumHeight(40)
+        self.cancel_button.setMinimumWidth(100)
         self.cancel_button.clicked.connect(self.reject)
         
         button_layout.addStretch()
         button_layout.addWidget(self.cancel_button)
-        button_layout.addSpacing(10)
         button_layout.addWidget(self.ok_button)
         
         layout.addLayout(button_layout)
